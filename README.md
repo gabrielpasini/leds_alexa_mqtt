@@ -8,7 +8,7 @@ Cadastre os dispositivos no [Sinric PRO](https://portal.sinric.pro/dashboard)
 
 ### `led_pc.ino`
 
-###RESPONSÁVEL PELAS FUNÇÕES DA ALEXA
+### RESPONSÁVEL PELAS FUNÇÕES DA ALEXA
 
 Fita utilizada:
 - Led WS2812 5V (Endereçada)
