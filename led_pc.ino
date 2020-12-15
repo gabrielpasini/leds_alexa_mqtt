@@ -2,47 +2,127 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <FastLED.h>
+#include "SinricPro.h"
+#include "SinricProLight.h"
 
-const char* ssid = "REDE_WIFI";
-const char* pass = "SENHA";
-const char* brokerUser = "USUARIO_MQTT_SERVER";
-const char* brokerPass = "SENHA_MQTT_SERVER";
-const char* broker = "ENDERECO_SERVER_EX:postman.cloudmqtt.com";
+#define BAUD_RATE 115200
+#define WIFI_SSID "REDE_WIFI"    
+#define WIFI_PASS "SENHA_WIFI"
+#define APP_KEY "KEY_SINRICPRO"
+#define APP_SECRET "SENHA_SINRICPRO"
+#define BROKER_USER "USUARIO_BROKER_MQTT"
+#define BROKER_PASS "SENHA_BROKER_MQTT"
+#define BROKER_URL "ENDERECO_SERVER_MQTT"
+
+#define LED_SETUP_ID "ID_DISPOSITIVO_SINRICPRO"
+#define LED_LAMP_ID "ID_DISPOSITIVO_SINRICPRO"
 
 WiFiClient espClient;
 PubSubClient client(espClient);
+
+bool powerState;        
+int globalBrightness = 100;
+
 char mensagem[16];
 char mensagemTratada[16];
 char sinalBuffer[16];
 unsigned int lengthMsg = 0;
 bool statusLeds = false;
 bool ligaRainbow = false;
-bool ligaRitmo = false;
 unsigned int velRainbow = 220;
 unsigned int larguraRainbow = 10;
-unsigned int sensi = 500;
-int sinal = 0;
-int loopRitmo = 0;
 int r = 0;
 int g = 0;
 int b = 0;
-#define NUM_LEDS 120
+#define NUM_LEDS 60
 #define DATA_PIN 13
-#define READ_PIN 34
 
 CRGB leds[NUM_LEDS];
 
-void setupWifi() {
-  delay(100);
-  Serial.print("\nConnecting to ");
-  Serial.println(ssid);
-  WiFi.begin(ssid, pass);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(100);
-    Serial.print("-");
+bool ledSetupOnPower(const String &deviceId, bool &state) {
+  powerState = state;
+  if (state) {
+    Serial.println("liga led_pc");
+    client.publish("/led_pc/rainbow", "1");
+  } else {
+    Serial.println("desliga led_pc");
+    client.publish("/led_pc/rainbow", "0");
   }
-  Serial.print("\nConnected to ");
-  Serial.println(ssid);
+  return true; // request handled properly
+}
+
+bool ledLampOnPower(const String &deviceId, bool &state) {
+  powerState = state;
+  if (state) {
+    Serial.println("liga led_lamp");
+    client.publish("/led_lamp/rainbow", "1");
+  } else {
+    Serial.println("desliga led_lamp");
+    client.publish("/led_lamp/rainbow", "0");
+  }
+  return true; // request handled properly
+}
+
+bool ledSetupOnBrightness(const String &deviceId, int &brightness) {
+  globalBrightness = brightness;
+  //FastLED.setBrightness(map(brightness, 0, 100, 0, 255));
+  //FastLED.show();
+  return true;
+}
+
+bool ledSetupOnAdjustBrightness(const String &deviceId, int brightnessDelta) {
+  globalBrightness += brightnessDelta;
+  brightnessDelta = globalBrightness;
+  //FastLED.setBrightness(map(globalBrightness, 0, 100, 0, 255));
+  //FastLED.show();
+  return true;
+}
+
+bool ledSetupOnColor(const String &deviceId, byte &red, byte &green, byte &blue) {
+  char hexCode[8];
+  sprintf(hexCode,"#%02x%02x%02x",red,green,blue);
+  Serial.println(hexCode);
+  client.publish("/led_pc/corFixa", hexCode);
+  return true;
+}
+
+bool ledLampOnColor(const String &deviceId, byte &red, byte &green, byte &blue) {
+  char hexCode[8];
+  sprintf(hexCode,"#%02x%02x%02x",red,green,blue);
+  Serial.println(hexCode);
+  client.publish("/led_lamp/corFixa", hexCode);
+  return true;
+}
+
+void setupWiFi() {
+  Serial.printf("\r\n[Wifi]: Connecting");
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.printf(".");
+    delay(250);
+  }
+  IPAddress localIP = WiFi.localIP();
+  Serial.printf("connected!\r\n[WiFi]: IP-Address is %s\r\n", localIP.toString().c_str());
+}
+
+void setupSinricPro() {
+  SinricProLight &ledSetup = SinricPro[LED_SETUP_ID];
+  ledSetup.onPowerState(ledSetupOnPower);
+  ledSetup.onBrightness(ledSetupOnBrightness);
+  ledSetup.onAdjustBrightness(ledSetupOnAdjustBrightness);
+  ledSetup.onColor(ledSetupOnColor);
+
+  SinricProLight &ledLamp = SinricPro[LED_LAMP_ID];
+  ledLamp.onPowerState(ledLampOnPower);
+  //ledLamp.onBrightness(onBrightness);
+  //ledLamp.onAdjustBrightness(onAdjustBrightness);
+  ledLamp.onColor(ledLampOnColor);
+
+  SinricPro.onConnected([](){ Serial.printf("Connected to SinricPro\r\n"); }); 
+  SinricPro.onDisconnected([](){ Serial.printf("Disconnected from SinricPro\r\n"); });
+  SinricPro.restoreDeviceStates(true);
+  SinricPro.begin(APP_KEY, APP_SECRET);
 }
 
 void desligaLeds() {
@@ -72,43 +152,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
     }
     client.publish("/led_pc/corFixa", "#000000");
   }
-  if (topico == "/led_pc/ritmo") {
-    loopRitmo = 0;
-    if (mensagem[0] == '1') {
-      ligaRitmo = true;
-    } else if (mensagem[0] == '0') {
-      ligaRitmo = false;
-    }
-  }
-  if (topico == "/led_pc/sensi") {
-    int milhar = 0;
-    int centena = 0;
-    int dezena = 0;
-    int unidade = 0;
-    if (lengthMsg == 4) {
-      milhar = ((int)mensagem[0] - 48) * 1000;
-      centena = ((int)mensagem[1] - 48) * 100;
-      dezena = ((int)mensagem[2] - 48) * 10;
-      unidade = (int)mensagem[3] - 48;
-    } else if (lengthMsg == 3) {
-      milhar = 0;
-      centena = ((int)mensagem[0] - 48) * 100;
-      dezena = ((int)mensagem[1] - 48) * 10;
-      unidade = (int)mensagem[2] - 48;
-    } else if (lengthMsg == 2) {
-      milhar = 0;
-      centena = 0;
-      dezena = ((int)mensagem[0] - 48) * 10;
-      unidade = (int)mensagem[1] - 48;
-    } else if (lengthMsg == 1) {
-      milhar = 0;
-      centena = 0;
-      dezena = 0;
-      unidade = (int)mensagem[0] - 48;
-    }
-    sensi = milhar + centena + dezena + unidade;
-  }
-  if (topico == "/led_pc/corFixa") {
+if (topico == "/led_pc/corFixa") {
     for (int i = 0; i < lengthMsg; i++) {
       mensagemTratada[i] = mensagem[i + 1];
     }
@@ -119,6 +163,10 @@ void callback(char* topic, byte* payload, unsigned int length) {
       r = number >> 16;
       g = number >> 8 & 0xFF;
       b = number & 0xFF;
+      Serial.print(r);
+      Serial.print(g);
+      Serial.print(b);
+      Serial.print("\n");
       CRGB rgbval(r, g, b);
       fill_solid(leds, NUM_LEDS, rgbval);
       FastLED.setBrightness(255);
@@ -166,16 +214,14 @@ void callback(char* topic, byte* payload, unsigned int length) {
 void reconnect() {
   while (!client.connected()) {
     Serial.print("\nConnecting to ");
-    Serial.println(broker);
-    if (client.connect("/led_pc", brokerUser, brokerPass)) {
+    Serial.println(BROKER_URL);
+    if (client.connect("/led_pc", BROKER_USER, BROKER_PASS)) {
       Serial.print("\nConnected to ");
-      Serial.println(broker);
+      Serial.println(BROKER_URL);
       client.subscribe("/led_pc/corFixa");
       client.subscribe("/led_pc/velocidade");
       client.subscribe("/led_pc/largura");
       client.subscribe("/led_pc/rainbow");
-      client.subscribe("/led_pc/ritmo");
-      client.subscribe("/led_pc/sensi");
     } else {
       Serial.println("\nTrying connect again");
       delay(5000);
@@ -184,13 +230,13 @@ void reconnect() {
 }
 
 void setup() {
-  pinMode(READ_PIN, INPUT);
+  Serial.begin(BAUD_RATE); Serial.printf("\r\n\r\n");
   FastLED.addLeds<WS2812, DATA_PIN, GRB>(leds, NUM_LEDS);
   FastLED.setCorrection(0xFFA0FF);
   FastLED.setTemperature(0xFF9329);
-  Serial.begin(115200);
-  setupWifi();
-  client.setServer(broker, 10978);
+  setupWiFi();
+  setupSinricPro();
+  client.setServer(BROKER_URL, 10978);
   client.setCallback(callback);
 }
 
@@ -198,39 +244,11 @@ void loop() {
   if (!client.connected()) {
     reconnect();
   }
-  if (ligaRitmo) {
-    sinal = analogRead(READ_PIN);
-    if (loopRitmo == 1000) {
-      loopRitmo = 0;
-      sprintf(sinalBuffer,"%d",sinal);
-      char* sinalStr = sinalBuffer;
-      client.publish("/led_pc/monitor", sinalStr);
-    }
-    int sensiMedia = sensi - sensi / 4;
-    int sensiBaixa = sensi / 2;
-    if (sinal >= sensi) {
-      FastLED.setBrightness(255);
-    } else if ((sinal >= sensiMedia) && (sinal < sensi)) {
-      FastLED.setBrightness(32);
-    } else if ((sinal >= sensiBaixa) && (sinal < sensiMedia)) {
-      FastLED.setBrightness(8);
-    } else {
-      FastLED.setBrightness(0);
-    }
-    if (ligaRainbow) {
-      fill_rainbow(leds, NUM_LEDS, (millis() * (255 - velRainbow) / 255), larguraRainbow);
-      FastLED.show();
-    } else {
-      CRGB rgbval(r, g, b);
-      fill_solid(leds, NUM_LEDS, rgbval);
-      FastLED.show();
-    }
-    loopRitmo++;
-  }
-  if (ligaRainbow && !ligaRitmo) {
+  if (ligaRainbow) {
     fill_rainbow(leds, NUM_LEDS, (millis() * (255 - velRainbow) / 255), larguraRainbow);
     FastLED.setBrightness(255);
     FastLED.show();
   }
   client.loop();
+  SinricPro.handle();
 }
